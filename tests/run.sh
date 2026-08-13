@@ -68,7 +68,7 @@ assert_eq "0" "${#PREFLIGHT_ERRORS[@]}" "missing sysstat must not block prefligh
 assert_eq "1" "${#PREFLIGHT_WARNINGS[@]}" "missing sysstat warning"
 
 "$ROOT/bin/server-doctor" help >/dev/null
-assert_eq "0.2.2" "$("$ROOT/bin/server-doctor" version)" "checkout version"
+assert_eq "0.2.3" "$("$ROOT/bin/server-doctor" version)" "checkout version"
 if "$ROOT/bin/server-doctor" doctor --profile invalid >/dev/null 2>&1; then
   fail "invalid profile unexpectedly passed"
 fi
@@ -80,7 +80,7 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/server-doctor-test.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 REPORT_DIR="$TMP_ROOT/report"
-mkdir -p "$REPORT_DIR/storage" "$REPORT_DIR/systemd" "$REPORT_DIR/logs" "$REPORT_DIR/security"
+mkdir -p "$REPORT_DIR/storage" "$REPORT_DIR/systemd" "$REPORT_DIR/logs" "$REPORT_DIR/security" "$REPORT_DIR/docker"
 CHECKS_TSV="$REPORT_DIR/checks.tsv"
 STARTED_UTC=2026-08-13T00:00:00Z
 SERVER_DOCTOR_PROFILE=standard
@@ -99,12 +99,20 @@ printf 'no\n' >"$REPORT_DIR/security/reboot-required.txt"
 printf 'count\tpriority\tunit\tidentifier\tcategory\n' >"$REPORT_DIR/logs/journal-error-summary.tsv"
 : >"$REPORT_DIR/logs/kernel-signatures.jsonl"
 : >"$REPORT_DIR/storage/open-deleted-files.txt"
+cat >"$REPORT_DIR/docker/containers.jsonl" <<'EOF'
+{"id":"first","state":{"health":"unhealthy","oom_killed":true,"running":false},"restart_count":2,"limits":{"memory":0}}
+{"id":"second","state":{"health":"healthy","oom_killed":false,"running":true},"restart_count":0,"limits":{"memory":0}}
+EOF
 
 source "$ROOT/lib/summary.sh"
 generate_summary
 [[ -s $REPORT_DIR/summary.md ]] || fail "summary was not generated"
 grep -q '85%' "$REPORT_DIR/summary.md" || fail "disk threshold missing from summary"
 grep -q 'All scheduled checks completed' "$REPORT_DIR/summary.md" || fail "completion statement missing"
+grep -Fq '| Unhealthy containers | 1 |' "$REPORT_DIR/summary.md" || fail "unhealthy container count missing"
+grep -Fq '| Containers previously OOM-killed | 1 |' "$REPORT_DIR/summary.md" || fail "OOM-killed container count missing"
+grep -Fq '| Containers with restarts | 1 |' "$REPORT_DIR/summary.md" || fail "restarted container count missing"
+grep -Fq '| Running containers without memory limit | 1 |' "$REPORT_DIR/summary.md" || fail "unlimited container count missing"
 [[ -s $REPORT_DIR/README.md ]] || fail "bundle README was not generated"
 
 source "$ROOT/lib/privacy.sh"

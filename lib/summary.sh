@@ -147,12 +147,15 @@ generate_summary() {
     if [[ -s $REPORT_DIR/docker/containers.jsonl ]] && jq -e -s . "$REPORT_DIR/docker/containers.jsonl" >/dev/null 2>&1; then
       printf '## Docker resource and cleanup analysis\n\n'
       printf '| Signal | Count |\n|---|---:|\n'
-      jq -s -r '
-        "| Unhealthy containers | \([.[] | select(.state.health == \"unhealthy\")] | length) |",
+      jq -s -r --arg unhealthy unhealthy '
+        "| Unhealthy containers | \([.[] | select(.state.health == $unhealthy)] | length) |",
         "| Containers previously OOM-killed | \([.[] | select(.state.oom_killed == true)] | length) |",
         "| Containers with restarts | \([.[] | select((.restart_count // 0) > 0)] | length) |",
         "| Running containers without memory limit | \([.[] | select(.state.running == true and ((.limits.memory // 0) == 0))] | length) |"
-      ' "$REPORT_DIR/docker/containers.jsonl"
+      ' "$REPORT_DIR/docker/containers.jsonl" || {
+        log_message ERROR "cannot generate Docker signal summary"
+        return 1
+      }
       printf '| Stopped container cleanup candidates | %s |\n' "$stopped_containers"
       printf '| Images unreferenced by any container | %s |\n' "$unreferenced_images"
       printf '| Volumes unreferenced by any container | %s |\n\n' "$unused_volumes"
@@ -168,7 +171,10 @@ generate_summary() {
         jq -s -r '
           sort_by((.MemPerc // "0%" | rtrimstr("%") | tonumber? // 0)) | reverse | .[:10][] |
           [.Container, .Name, .MemUsage, .MemPerc, .CPUPerc, .BlockIO, .PIDs] | @tsv
-        ' "$REPORT_DIR/docker/container-stats.jsonl"
+        ' "$REPORT_DIR/docker/container-stats.jsonl" || {
+          log_message ERROR "cannot generate Docker container ranking"
+          return 1
+        }
         printf '```\n\n'
       fi
 
