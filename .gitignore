@@ -1,0 +1,5 @@
+/artifacts/
+*.zip
+*.zip.age
+*.sha256
+*.partial

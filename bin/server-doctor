@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+SERVER_DOCTOR_ENTRY=${BASH_SOURCE[0]}
+while [[ -L $SERVER_DOCTOR_ENTRY ]]; do
+  SERVER_DOCTOR_ENTRY_DIR=$(cd -P "$(dirname "$SERVER_DOCTOR_ENTRY")" && pwd -P)
+  SERVER_DOCTOR_ENTRY_TARGET=$(readlink "$SERVER_DOCTOR_ENTRY") || exit 1
+  case "$SERVER_DOCTOR_ENTRY_TARGET" in
+    /*) SERVER_DOCTOR_ENTRY=$SERVER_DOCTOR_ENTRY_TARGET ;;
+    *) SERVER_DOCTOR_ENTRY="$SERVER_DOCTOR_ENTRY_DIR/$SERVER_DOCTOR_ENTRY_TARGET" ;;
+  esac
+done
+SERVER_DOCTOR_ROOT=$(cd "$(dirname "$SERVER_DOCTOR_ENTRY")/.." && pwd -P)
+export SERVER_DOCTOR_ROOT
+
+# shellcheck source=config/defaults.conf
+source "$SERVER_DOCTOR_ROOT/config/defaults.conf"
+# shellcheck source=lib/common.sh
+source "$SERVER_DOCTOR_ROOT/lib/common.sh"
+# shellcheck source=lib/preflight.sh
+source "$SERVER_DOCTOR_ROOT/lib/preflight.sh"
+
+VERSION=0.2.0
+SERVER_DOCTOR_VERSION=$VERSION
+export SERVER_DOCTOR_VERSION
+
+usage() {
+  cat <<'EOF'
+server-doctor - read-only Debian/Ubuntu diagnostic bundle collector
+
+Usage:
+  ~/server-doctor doctor [--profile standard] [--since 24h]
+  sudo ~/server-doctor audit [--profile standard] [--since 24h]
+  make doctor [PROFILE=standard] [SINCE=24h]
+  sudo make audit [PROFILE=quick|standard|deep] [SINCE=24h]
+  make verify ARCHIVE=/path/to/server-doctor_*.zip
+
+Direct CLI:
+  server-doctor doctor|audit [options]
+  server-doctor verify --archive PATH
+
+Options:
+  --profile NAME          quick, standard (default), or deep
+  --since DURATION        positive duration: 30m, 24h, 2d, or 1w
+  --output DIRECTORY      report and archive destination
+  --observe-seconds N     active sample duration, 5..300 seconds
+  --max-report-mib N      hard maximum for the uncompressed report
+  --encrypt-to RECIPIENT  encrypt the ZIP with age; plaintext ZIP is removed
+  --archive PATH          archive passed to verify
+  -h, --help              show help
+
+The collector never installs packages, changes configuration, restarts a
+service, prunes Docker objects, or repairs the server.
+EOF
+}
+
+die() { printf 'server-doctor: %s\n' "$*" >&2; exit 2; }
+
+cleanup_verify_dir() {
+  local path=$1
+  case "$path" in
+    "${TMPDIR:-/tmp}"/server-doctor-verify.*)
+      find "$path" -depth -delete
+      ;;
+    *)
+      printf 'Refusing to clean unexpected verification path: %s\n' "$path" >&2
+      return 1
+      ;;
+  esac
+}
+
+restore_sudo_owner() {
+  local owned_path
+  for owned_path in \
+    "${REPORT_DIR:-}" \
+    "${REPORT_DIR:-}.zip" \
+    "${REPORT_DIR:-}.zip.age" \
+    "${REPORT_DIR:-}.zip.sha256" \
+    "${REPORT_DIR:-}.zip.age.sha256"; do
+    if [[ -n $owned_path && -e $owned_path ]]; then
+      chown -R "$SUDO_UID:$SUDO_GID" "$owned_path" 2>/dev/null || true
+    fi
+  done
+}
+
+validate_integer_range() {
+  local name=$1 value=$2 minimum=$3 maximum=$4
+  [[ $value =~ ^[0-9]+$ ]] || die "$name must be an integer"
+  (( value >= minimum && value <= maximum )) || die "$name must be between $minimum and $maximum"
+}
+
+validate_options() {
+  [[ $SERVER_DOCTOR_PROFILE =~ ^(quick|standard|deep)$ ]] || die "invalid profile: $SERVER_DOCTOR_PROFILE"
+  [[ $SERVER_DOCTOR_SINCE =~ ^[1-9][0-9]*[mhdw]$ ]] || die "invalid duration: $SERVER_DOCTOR_SINCE"
+  local minutes
+  minutes=$(since_to_minutes "$SERVER_DOCTOR_SINCE")
+  (( minutes <= 43200 )) || die "duration must not exceed 30 days"
+
+  if [[ -z $SERVER_DOCTOR_OBSERVE_SECONDS ]]; then
+    case "$SERVER_DOCTOR_PROFILE" in
+      quick) SERVER_DOCTOR_OBSERVE_SECONDS=15 ;;
+      standard) SERVER_DOCTOR_OBSERVE_SECONDS=60 ;;
+      deep) SERVER_DOCTOR_OBSERVE_SECONDS=120 ;;
+    esac
+  fi
+  validate_integer_range observe-seconds "$SERVER_DOCTOR_OBSERVE_SECONDS" 5 300
+  validate_integer_range max-report-mib "$SERVER_DOCTOR_MAX_REPORT_MIB" 64 10240
+  validate_integer_range max-file-mib "$SERVER_DOCTOR_MAX_FILE_MIB" 1 100
+  [[ -n $SERVER_DOCTOR_OUTPUT ]] || die "output directory must not be empty"
+  [[ $SERVER_DOCTOR_OUTPUT != *$'\n'* && $SERVER_DOCTOR_OUTPUT != *$'\r'* && $SERVER_DOCTOR_OUTPUT != *$'\t'* ]] || \
+    die "output directory contains a control character"
+  export SERVER_DOCTOR_PROFILE SERVER_DOCTOR_SINCE SERVER_DOCTOR_OUTPUT
+  export SERVER_DOCTOR_OBSERVE_SECONDS SERVER_DOCTOR_MAX_REPORT_MIB
+  export SERVER_DOCTOR_MAX_FILE_MIB SERVER_DOCTOR_COMMAND_TIMEOUT
+  export SERVER_DOCTOR_DISK_SCAN_TIMEOUT SERVER_DOCTOR_PCP_TIMEOUT
+  export SERVER_DOCTOR_WARN_PERCENT
+  export SERVER_DOCTOR_ENCRYPT_TO
+}
+
+parse_options() {
+  while (($#)); do
+    case "$1" in
+      --profile) [[ $# -ge 2 ]] || die "--profile needs a value"; SERVER_DOCTOR_PROFILE=$2; shift 2 ;;
+      --since) [[ $# -ge 2 ]] || die "--since needs a value"; SERVER_DOCTOR_SINCE=$2; shift 2 ;;
+      --output) [[ $# -ge 2 ]] || die "--output needs a value"; SERVER_DOCTOR_OUTPUT=$2; shift 2 ;;
+      --observe-seconds) [[ $# -ge 2 ]] || die "--observe-seconds needs a value"; SERVER_DOCTOR_OBSERVE_SECONDS=$2; shift 2 ;;
+      --max-report-mib) [[ $# -ge 2 ]] || die "--max-report-mib needs a value"; SERVER_DOCTOR_MAX_REPORT_MIB=$2; shift 2 ;;
+      --encrypt-to) [[ $# -ge 2 ]] || die "--encrypt-to needs a value"; SERVER_DOCTOR_ENCRYPT_TO=$2; shift 2 ;;
+      --archive) [[ $# -ge 2 ]] || die "--archive needs a value"; VERIFY_ARCHIVE=$2; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+}
+
+prepare_output() {
+  mkdir -p "$SERVER_DOCTOR_OUTPUT" || die "cannot create output directory"
+  SERVER_DOCTOR_OUTPUT=$(cd "$SERVER_DOCTOR_OUTPUT" && pwd -P)
+  case "$SERVER_DOCTOR_OUTPUT" in
+    /|/etc|/usr|/var|/home|/root) die "output must be a dedicated subdirectory, not $SERVER_DOCTOR_OUTPUT" ;;
+  esac
+  export SERVER_DOCTOR_OUTPUT
+
+  local available_kib required_kib
+  available_kib=$(df -Pk "$SERVER_DOCTOR_OUTPUT" | awk 'NR==2 {print $4}')
+  required_kib=$((SERVER_DOCTOR_MAX_REPORT_MIB * 2 * 1024 + 256 * 1024))
+  if (( required_kib < SERVER_DOCTOR_MIN_FREE_MIB * 1024 )); then
+    required_kib=$((SERVER_DOCTOR_MIN_FREE_MIB * 1024))
+  fi
+  (( available_kib >= required_kib )) || die "insufficient free space in $SERVER_DOCTOR_OUTPUT; need at least $((required_kib / 1024)) MiB"
+}
+
+write_manifest() {
+  local finished=${1:-}
+  local state=${2:-collecting}
+  jq -n \
+    --arg schema_version "1" \
+    --arg tool_version "$VERSION" \
+    --arg state "$state" \
+    --arg profile "$SERVER_DOCTOR_PROFILE" \
+    --arg since "$SERVER_DOCTOR_SINCE" \
+    --argjson observe_seconds "$SERVER_DOCTOR_OBSERVE_SECONDS" \
+    --arg started_utc "$STARTED_UTC" \
+    --arg finished_utc "$finished" \
+    --argjson systemd "$CAP_SYSTEMD" \
+    --argjson docker "$CAP_DOCKER" \
+    --argjson pcp "$CAP_PCP" \
+    '{schema_version:$schema_version,tool:{name:"server-doctor",version:$tool_version},state:$state,profile:$profile,since:$since,observe_seconds:$observe_seconds,started_utc:$started_utc,finished_utc:(if $finished_utc == "" then null else $finished_utc end),capabilities:{systemd:$systemd,docker:$docker,pcp:$pcp}}' \
+    >"$REPORT_DIR/manifest.json"
+}
+
+run_collectors() {
+  local collector status collector_started collector_start collector_end
+  for collector in "$SERVER_DOCTOR_ROOT"/collectors/*.sh; do
+    log_message INFO "starting $(basename "$collector")"
+    collector_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    collector_start=$(date +%s)
+    bash "$collector"
+    status=$?
+    if (( status != 0 )); then
+      collector_end=$(date +%s)
+      log_message ERROR "collector $(basename "$collector") exited with $status"
+      record_check "collector $(basename "$collector")" "-" "$collector_started" \
+        "$((collector_end - collector_start))" "$status" failed 0
+    fi
+  done
+}
+
+finalize_report() {
+  local finished report_bytes final_dir archive checksum_target
+  finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  write_manifest "$finished" complete || return 1
+
+  # shellcheck source=lib/summary.sh
+  source "$SERVER_DOCTOR_ROOT/lib/summary.sh"
+  generate_summary || return 1
+
+  # shellcheck source=lib/privacy.sh
+  source "$SERVER_DOCTOR_ROOT/lib/privacy.sh"
+  privacy_scan_report || {
+    printf 'No archive was created. The partial report remains at %s for local review.\n' "$REPORT_DIR" >&2
+    return 1
+  }
+
+  (
+    cd "$REPORT_DIR"
+    # SHA256SUMS is excluded explicitly; ShellCheck cannot infer the find predicate.
+    # shellcheck disable=SC2094
+    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS
+  ) || return 1
+
+  report_bytes=$(du -sb "$REPORT_DIR" | awk '{print $1}')
+  if (( report_bytes > SERVER_DOCTOR_MAX_REPORT_MIB * 1024 * 1024 )); then
+    printf 'Report is %s bytes, above the %s MiB limit. Partial data kept at %s\n' \
+      "$report_bytes" "$SERVER_DOCTOR_MAX_REPORT_MIB" "$REPORT_DIR" >&2
+    return 1
+  fi
+
+  final_dir="$SERVER_DOCTOR_OUTPUT/server-doctor_${STAMP}"
+  [[ ! -e $final_dir ]] || die "output already exists: $final_dir"
+  [[ ! -e ${final_dir}.zip && ! -e ${final_dir}.zip.age ]] || die "archive output already exists for $final_dir"
+  mv "$REPORT_DIR" "$final_dir" || return 1
+  REPORT_DIR=$final_dir
+  export REPORT_DIR
+
+  archive="${final_dir}.zip"
+  (cd "$SERVER_DOCTOR_OUTPUT" && ionice -c3 nice -n 19 zip -q -r -9 "$(basename "$archive")" "$(basename "$final_dir")") || return 1
+
+  if [[ -n $SERVER_DOCTOR_ENCRYPT_TO ]]; then
+    age -r "$SERVER_DOCTOR_ENCRYPT_TO" -o "${archive}.age" "$archive" || return 1
+    rm -f -- "$archive" || return 1
+    archive="${archive}.age"
+  fi
+  checksum_target="${archive}.sha256"
+  (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" >"$(basename "$checksum_target")") || return 1
+
+  if [[ -n ${SUDO_UID:-} && -n ${SUDO_GID:-} ]]; then
+    chown -R "$SUDO_UID:$SUDO_GID" "$final_dir" "$archive" "$checksum_target" || return 1
+  fi
+
+  printf '\nAudit complete.\nReport: %s\nArchive: %s\nChecksum: %s\n' "$final_dir" "$archive" "$checksum_target"
+}
+
+audit_main() {
+  validate_options
+  if [[ -n ${SUDO_UID:-} || -n ${SUDO_GID:-} ]]; then
+    [[ ${SUDO_UID:-} =~ ^[0-9]+$ && ${SUDO_GID:-} =~ ^[0-9]+$ ]] || die "invalid SUDO_UID/SUDO_GID"
+  fi
+  run_preflight audit || exit 1
+  prepare_output
+
+  umask 077
+  exec 9>"$SERVER_DOCTOR_OUTPUT/.server-doctor.lock"
+  flock -n 9 || die "another audit is already running for $SERVER_DOCTOR_OUTPUT"
+
+  STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  REPORT_DIR="$SERVER_DOCTOR_OUTPUT/.server-doctor_${STAMP}_$$.partial"
+  mkdir -m 0700 "$REPORT_DIR"
+  if [[ -n ${SUDO_UID:-} && -n ${SUDO_GID:-} ]]; then
+    trap restore_sudo_owner EXIT
+  fi
+  COLLECTION_LOG="$REPORT_DIR/collection.log"
+  CHECKS_TSV="$REPORT_DIR/checks.tsv"
+  printf 'started_utc\tduration_seconds\texit_code\tstatus\tbytes\tcheck\tfile\n' >"$CHECKS_TSV"
+  : >"$COLLECTION_LOG"
+
+  export STARTED_UTC STAMP REPORT_DIR COLLECTION_LOG CHECKS_TSV
+  write_manifest "" collecting || die "cannot write initial manifest"
+  run_collectors
+  finalize_report
+}
+
+verify_archive() {
+  local archive=${VERIFY_ARCHIVE:-}
+  local verify_dir bundle_dir
+  [[ -n $archive ]] || die "verify requires --archive PATH"
+  [[ -f $archive ]] || die "archive does not exist: $archive"
+  [[ -f ${archive}.sha256 ]] || die "checksum sidecar is missing: ${archive}.sha256"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$(dirname "$archive")" && sha256sum -c "$(basename "${archive}.sha256")") || exit 1
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "${archive}.sha256")") || exit 1
+  else
+    die "sha256sum or shasum is required to verify an archive"
+  fi
+  if [[ $archive == *.age ]]; then
+    printf 'Encrypted archive checksum is valid. Decrypt it, then run unzip -t on the ZIP.\n'
+  else
+    unzip -t "$archive" >/dev/null || exit 1
+    umask 077
+    verify_dir=$(mktemp -d "${TMPDIR:-/tmp}/server-doctor-verify.XXXXXX") || exit 1
+    unzip -q "$archive" -d "$verify_dir" || { cleanup_verify_dir "$verify_dir"; exit 1; }
+    bundle_dir=$(find "$verify_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)
+    [[ -n $bundle_dir && -f $bundle_dir/SHA256SUMS ]] || { cleanup_verify_dir "$verify_dir"; die "internal SHA256SUMS is missing"; }
+    if command -v sha256sum >/dev/null 2>&1; then
+      (cd "$bundle_dir" && sha256sum -c SHA256SUMS >/dev/null) || { cleanup_verify_dir "$verify_dir"; exit 1; }
+    else
+      (cd "$bundle_dir" && shasum -a 256 -c SHA256SUMS >/dev/null) || { cleanup_verify_dir "$verify_dir"; exit 1; }
+    fi
+    cleanup_verify_dir "$verify_dir"
+    printf 'Archive checksum, ZIP structure, and internal file checksums are valid: %s\n' "$archive"
+  fi
+}
+
+command=${1:-help}
+shift || true
+parse_options "$@"
+
+case "$command" in
+  help) usage ;;
+  doctor) validate_options; run_preflight doctor ;;
+  audit) audit_main ;;
+  verify) verify_archive ;;
+  version|--version) printf '%s\n' "$VERSION" ;;
+  *) die "unknown command: $command" ;;
+esac

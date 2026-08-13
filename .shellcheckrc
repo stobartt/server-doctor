@@ -1,0 +1,3 @@
+# SC2016 is intentional for bash -c programs and Markdown backticks.
+# SC2004 is a style-only array-index suggestion that reduces readability here.
+disable=SC2016,SC2004
