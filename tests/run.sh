@@ -70,26 +70,22 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/server-doctor-test.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 INSTALL_TEST_HOME="$TMP_ROOT/home"
-INSTALL_TEST_BASE="$INSTALL_TEST_HOME/.local/share/server-doctor"
 INSTALL_TEST_LAUNCHER="$INSTALL_TEST_HOME/server-doctor"
 mkdir -p "$INSTALL_TEST_HOME"
-SERVER_DOCTOR_USER_INSTALL_DIR="$INSTALL_TEST_BASE" \
-SERVER_DOCTOR_USER_LAUNCHER="$INSTALL_TEST_LAUNCHER" \
-  "$ROOT/bin/install-user" >/dev/null
+HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
 [[ -L $INSTALL_TEST_LAUNCHER ]] || fail "user launcher symlink was not created"
 assert_eq "0.2.0" "$("$INSTALL_TEST_LAUNCHER" version)" "installed launcher version"
 first_release=$(readlink "$INSTALL_TEST_LAUNCHER")
-SERVER_DOCTOR_USER_INSTALL_DIR="$INSTALL_TEST_BASE" \
-SERVER_DOCTOR_USER_LAUNCHER="$INSTALL_TEST_LAUNCHER" \
-  "$ROOT/bin/install-user" >/dev/null
+HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
 second_release=$(readlink "$INSTALL_TEST_LAUNCHER")
 [[ $first_release != "$second_release" ]] || fail "reinstall did not create a clean release"
 [[ -x $first_release && -x $second_release ]] || fail "versioned install releases are missing"
 
-INSTALL_CONFLICT="$INSTALL_TEST_HOME/existing-launcher"
+INSTALL_CONFLICT_HOME="$TMP_ROOT/conflict-home"
+INSTALL_CONFLICT="$INSTALL_CONFLICT_HOME/server-doctor"
+mkdir -p "$INSTALL_CONFLICT_HOME"
 printf 'preserve me\n' >"$INSTALL_CONFLICT"
-if SERVER_DOCTOR_USER_INSTALL_DIR="$INSTALL_TEST_HOME/conflict-runtime" \
-  SERVER_DOCTOR_USER_LAUNCHER="$INSTALL_CONFLICT" "$ROOT/bin/install-user" >/dev/null 2>&1; then
+if HOME="$INSTALL_CONFLICT_HOME" "$ROOT/bin/install-user" >/dev/null 2>&1; then
   fail "installer overwrote a non-symlink launcher"
 fi
 grep -q 'preserve me' "$INSTALL_CONFLICT" || fail "installer changed conflicting launcher"

@@ -7,8 +7,6 @@ OBSERVE_SECONDS ?=
 MAX_REPORT_MIB ?= 1024
 ENCRYPT_TO ?=
 ARCHIVE ?=
-USER_INSTALL_DIR ?= $(HOME)/.local/share/server-doctor
-USER_LAUNCHER ?= $(HOME)/server-doctor
 
 DOCTOR := $(CURDIR)/bin/server-doctor
 COMMON_ARGS := --profile "$(PROFILE)" --since "$(SINCE)" --output "$(OUTPUT)" --max-report-mib "$(MAX_REPORT_MIB)"
@@ -25,7 +23,7 @@ help:
 	@$(DOCTOR) help
 
 install-user:
-	@SERVER_DOCTOR_USER_INSTALL_DIR="$(USER_INSTALL_DIR)" SERVER_DOCTOR_USER_LAUNCHER="$(USER_LAUNCHER)" bin/install-user
+	@bin/install-user
 
 doctor:
 	@$(DOCTOR) doctor $(COMMON_ARGS)
