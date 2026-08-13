@@ -39,27 +39,31 @@ count=$((SERVER_DOCTOR_OBSERVE_SECONDS / interval))
 sample_timeout=$((SERVER_DOCTOR_OBSERVE_SECONDS + 30))
 
 run_capture "vmstat active sample" performance/vmstat.txt "$sample_timeout" vmstat -w "$interval" "$count" &
-run_capture "pidstat active sample" performance/pidstat.txt "$sample_timeout" bash -c '
-  pidstat -u -r -d -h -p ALL "$1" "$2" | awk "
-    /^Linux / {next}
-    {
-      uid=0
-      for (i=1; i<=NF; i++) if (\$i == \"UID\") uid=i
-      if (uid) {active_uid=uid; for (i=1; i<=NF; i++) if (i != uid) printf \"%s%s\", \$i, (i==NF ? ORS : OFS); next}
-      if (active_uid && NF >= active_uid) {
-        for (i=1; i<=NF; i++) if (i != active_uid) printf \"%s%s\", \$i, (i==NF ? ORS : OFS)
-        next
+if (( CAP_SYSSTAT )); then
+  run_capture "pidstat active sample" performance/pidstat.txt "$sample_timeout" bash -c '
+    pidstat -u -r -d -h -p ALL "$1" "$2" | awk "
+      /^Linux / {next}
+      {
+        uid=0
+        for (i=1; i<=NF; i++) if (\$i == \"UID\") uid=i
+        if (uid) {active_uid=uid; for (i=1; i<=NF; i++) if (i != uid) printf \"%s%s\", \$i, (i==NF ? ORS : OFS); next}
+        if (active_uid && NF >= active_uid) {
+          for (i=1; i<=NF; i++) if (i != active_uid) printf \"%s%s\", \$i, (i==NF ? ORS : OFS)
+          next
+        }
+        print
       }
-      print
-    }
-  "
-' _ "$interval" "$count" &
-run_capture "iostat active sample" performance/iostat.txt "$sample_timeout" bash -c '
-  iostat -x -z -y "$1" "$2" | sed "/^Linux /d"
-' _ "$interval" "$count" &
-run_capture "resource active sample" performance/sar-resource.txt "$sample_timeout" bash -c '
-  sar -u ALL -r ALL -S -W -B -q ALL -d "$1" "$2" | sed "/^Linux /d"
-' _ "$interval" "$count" &
+    "
+  ' _ "$interval" "$count" &
+  run_capture "iostat active sample" performance/iostat.txt "$sample_timeout" bash -c '
+    iostat -x -z -y "$1" "$2" | sed "/^Linux /d"
+  ' _ "$interval" "$count" &
+  run_capture "resource active sample" performance/sar-resource.txt "$sample_timeout" bash -c '
+    sar -u ALL -r ALL -S -W -B -q ALL -d "$1" "$2" | sed "/^Linux /d"
+  ' _ "$interval" "$count" &
+else
+  write_not_applicable performance/sysstat-active "sysstat is not installed; vmstat, process snapshots, and cgroups remain available."
+fi
 if (( CAP_SYSTEMD )); then
   run_capture "cgroup active sample" performance/systemd-cgtop.txt "$sample_timeout" bash -c '
     systemd-cgtop --batch --iterations="$1" --delay="${2}s" |
@@ -68,17 +72,25 @@ if (( CAP_SYSTEMD )); then
 fi
 wait
 
-history_minutes=$(since_to_minutes "$SERVER_DOCTOR_SINCE")
-run_capture "sysstat historical data" performance/sar-history.txt "$SERVER_DOCTOR_PCP_TIMEOUT" bash -c '
-  set -o pipefail
-  window=$((10#$1 + 1440))
-  mapfile -d "" files < <(find /var/log/sysstat /var/log/sa -type f -name "sa[0-9]*" -mmin "-$window" -print0 2>/dev/null | sort -z)
-  ((${#files[@]})) || { echo "No sysstat archives found"; exit 1; }
-  for file in "${files[@]}"; do
-    printf "\n### %s\n" "$file"
-    sar -u ALL -r ALL -S -W -B -q ALL -d -f "$file" | sed "/^Linux /d" || true
-  done
-' _ "$history_minutes"
+if (( CAP_SYSSTAT_HISTORY )); then
+  history_minutes=$(since_to_minutes "$SERVER_DOCTOR_SINCE")
+  run_capture "sysstat historical data" performance/sar-history.txt "$SERVER_DOCTOR_PCP_TIMEOUT" bash -c '
+    set -o pipefail
+    window=$((10#$1 + 1440))
+    mapfile -d "" files < <(find /var/log/sysstat /var/log/sa -type f -name "sa[0-9]*" -mmin "-$window" -print0 2>/dev/null | sort -z)
+    ((${#files[@]})) || { echo "No sysstat archives found in the requested window"; exit 1; }
+    for file in "${files[@]}"; do
+      printf "\n### %s\n" "$file"
+      sar -u ALL -r ALL -S -W -B -q ALL -d -f "$file" | sed "/^Linux /d" || true
+    done
+  ' _ "$history_minutes"
+else
+  if [[ $SERVER_DOCTOR_PROFILE == quick ]]; then
+    write_not_applicable performance/sysstat-history "No sysstat archive is available; quick does not guarantee retrospective performance history."
+  else
+    write_not_applicable performance/sysstat-history "No sysstat archive is available; PCP is the retrospective data source for standard and deep profiles."
+  fi
+fi
 
 run_capture "processes after sample" performance/processes-after.tsv "$SERVER_DOCTOR_COMMAND_TIMEOUT" \
   ps -eo pid,ppid,stat,nlwp,pcpu,pmem,rss,vsz,etimes,comm --sort=-pcpu

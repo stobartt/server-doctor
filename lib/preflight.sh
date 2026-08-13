@@ -52,12 +52,22 @@ detect_capabilities() {
   CAP_SYSTEMD=0
   CAP_DOCKER=0
   CAP_PCP=0
+  CAP_SYSSTAT=0
+  CAP_SYSSTAT_HISTORY=0
+  CAP_SYSSTAT_HISTORY_RECENT=0
 
   [[ -d /run/systemd/system ]] && CAP_SYSTEMD=1
   if command -v docker >/dev/null 2>&1 || [[ -S /run/docker.sock || -d /var/lib/docker ]]; then CAP_DOCKER=1; fi
   if command -v pcp >/dev/null 2>&1 || [[ -d /var/log/pcp/pmlogger ]]; then CAP_PCP=1; fi
+  if command -v iostat >/dev/null 2>&1 && command -v pidstat >/dev/null 2>&1 && command -v sar >/dev/null 2>&1; then
+    CAP_SYSSTAT=1
+  fi
+  if (( CAP_SYSSTAT )); then
+    has_sysstat_archive && CAP_SYSSTAT_HISTORY=1
+    has_recent_sysstat_archive && CAP_SYSSTAT_HISTORY_RECENT=1
+  fi
 
-  export CAP_SYSTEMD CAP_DOCKER CAP_PCP
+  export CAP_SYSTEMD CAP_DOCKER CAP_PCP CAP_SYSSTAT CAP_SYSSTAT_HISTORY CAP_SYSSTAT_HISTORY_RECENT
 }
 
 check_required_commands() {
@@ -84,7 +94,6 @@ check_required_commands() {
     "ps:procps" "free:procps" "vmstat:procps"
     "flock:util-linux" "ionice:util-linux" "lsblk:util-linux" "findmnt:util-linux"
     "zip:zip" "unzip:unzip" "jq:jq" "lsof:lsof"
-    "iostat:sysstat" "pidstat:sysstat" "sar:sysstat"
     "zgrep:gzip" "dpkg-query:dpkg" "apt:apt"
   )
   local pair
@@ -109,6 +118,28 @@ check_required_commands() {
   if [[ -n $SERVER_DOCTOR_ENCRYPT_TO ]]; then require_command age age; fi
 }
 
+check_sysstat_history() {
+  if (( CAP_SYSSTAT == 0 )); then
+    if [[ $SERVER_DOCTOR_PROFILE == quick ]]; then
+      add_warning "sysstat is not installed; quick will use current process, vmstat, and cgroup observations without retrospective performance history"
+    else
+      add_warning "sysstat is not installed; PCP provides retrospective data and built-in samplers remain available"
+    fi
+  elif (( CAP_SYSSTAT_HISTORY == 0 )); then
+    if [[ $SERVER_DOCTOR_PROFILE == quick ]]; then
+      add_warning "sysstat has no readable archive; quick will use sysstat only for the active sample"
+    else
+      add_warning "sysstat has no readable archive; PCP will provide retrospective data and sysstat will be used only for the active sample"
+    fi
+  elif (( CAP_SYSSTAT_HISTORY_RECENT == 0 )); then
+    if [[ $SERVER_DOCTOR_PROFILE == quick ]]; then
+      add_warning "sysstat archive is stale; quick has no guaranteed current retrospective performance history"
+    else
+      add_warning "sysstat archive is stale; PCP will provide current retrospective data"
+    fi
+  fi
+}
+
 check_services_and_history() {
   if (( CAP_SYSTEMD == 0 )); then
     add_error "systemd is not PID 1; version 1 supports Debian/Ubuntu servers with systemd only"
@@ -129,17 +160,13 @@ check_services_and_history() {
     fi
   fi
 
-  if ! has_sysstat_archive; then
-    add_error "sysstat has no readable historical archive; enable collection, wait for samples, then rerun"
-  elif ! has_recent_sysstat_archive; then
-    add_error "sysstat archive is stale (no sample file updated in 30 minutes); repair collection, then rerun"
-  fi
+  check_sysstat_history
 }
 
 check_runtime_access() {
   local mode=$1
   if [[ $mode == audit && $EUID -ne 0 ]]; then
-    add_error "a complete audit requires root; run sudo make audit ..."
+    add_error "a complete audit requires root; run sudo ~/server-doctor audit ..."
   elif [[ $mode == doctor && $EUID -ne 0 ]]; then
     add_warning "run the final audit via sudo so journals, cgroups, Docker and storage metadata are complete"
   fi
@@ -159,8 +186,8 @@ print_preflight() {
   local mode=$1
   printf 'server-doctor preflight\n'
   printf '  profile: %s\n  since: %s\n' "$SERVER_DOCTOR_PROFILE" "$SERVER_DOCTOR_SINCE"
-  printf '  capabilities: systemd=%s docker=%s pcp=%s\n' \
-    "$CAP_SYSTEMD" "$CAP_DOCKER" "$CAP_PCP"
+  printf '  capabilities: systemd=%s docker=%s pcp=%s sysstat=%s sysstat_history=%s\n' \
+    "$CAP_SYSTEMD" "$CAP_DOCKER" "$CAP_PCP" "$CAP_SYSSTAT" "$CAP_SYSSTAT_HISTORY"
 
   local item
   for item in "${PREFLIGHT_WARNINGS[@]:-}"; do [[ -n $item ]] && printf 'WARNING: %s\n' "$item"; done
@@ -180,11 +207,6 @@ print_preflight() {
     printf '\nEnable historical PCP collection after installing packages:\n'
     printf '  sudo systemctl enable --now pmcd pmlogger\n'
   fi
-  if ! has_recent_sysstat_archive; then
-    printf '\nEnable sysstat history after installing packages:\n'
-    printf '  sudo systemctl enable --now sysstat-collect.timer sysstat-summary.timer\n'
-  fi
-
   if ((${#PREFLIGHT_ERRORS[@]} || ${#MISSING_COMMANDS[@]})); then
     printf '\nPreflight failed. No audit data was collected.\n'
     return 1

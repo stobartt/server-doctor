@@ -58,6 +58,15 @@ add_package_once jq
 add_package_once jq
 assert_eq "1" "${#MISSING_PACKAGES[@]}" "package de-duplication"
 
+PREFLIGHT_ERRORS=()
+PREFLIGHT_WARNINGS=()
+CAP_SYSSTAT=0
+CAP_SYSSTAT_HISTORY=0
+CAP_SYSSTAT_HISTORY_RECENT=0
+check_sysstat_history
+assert_eq "0" "${#PREFLIGHT_ERRORS[@]}" "missing sysstat must not block preflight"
+assert_eq "1" "${#PREFLIGHT_WARNINGS[@]}" "missing sysstat warning"
+
 "$ROOT/bin/server-doctor" help >/dev/null
 if "$ROOT/bin/server-doctor" doctor --profile invalid >/dev/null 2>&1; then
   fail "invalid profile unexpectedly passed"
@@ -74,7 +83,7 @@ INSTALL_TEST_LAUNCHER="$INSTALL_TEST_HOME/server-doctor"
 mkdir -p "$INSTALL_TEST_HOME"
 HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
 [[ -L $INSTALL_TEST_LAUNCHER ]] || fail "user launcher symlink was not created"
-assert_eq "0.2.0" "$("$INSTALL_TEST_LAUNCHER" version)" "installed launcher version"
+assert_eq "0.2.1" "$("$INSTALL_TEST_LAUNCHER" version)" "installed launcher version"
 first_release=$(readlink "$INSTALL_TEST_LAUNCHER")
 HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
 second_release=$(readlink "$INSTALL_TEST_LAUNCHER")

@@ -20,7 +20,7 @@ source "$SERVER_DOCTOR_ROOT/lib/common.sh"
 # shellcheck source=lib/preflight.sh
 source "$SERVER_DOCTOR_ROOT/lib/preflight.sh"
 
-VERSION=0.2.0
+VERSION=0.2.1
 SERVER_DOCTOR_VERSION=$VERSION
 export SERVER_DOCTOR_VERSION
 
@@ -165,7 +165,9 @@ write_manifest() {
     --argjson systemd "$CAP_SYSTEMD" \
     --argjson docker "$CAP_DOCKER" \
     --argjson pcp "$CAP_PCP" \
-    '{schema_version:$schema_version,tool:{name:"server-doctor",version:$tool_version},state:$state,profile:$profile,since:$since,observe_seconds:$observe_seconds,started_utc:$started_utc,finished_utc:(if $finished_utc == "" then null else $finished_utc end),capabilities:{systemd:$systemd,docker:$docker,pcp:$pcp}}' \
+    --argjson sysstat "$CAP_SYSSTAT" \
+    --argjson sysstat_history "$CAP_SYSSTAT_HISTORY" \
+    '{schema_version:$schema_version,tool:{name:"server-doctor",version:$tool_version},state:$state,profile:$profile,since:$since,observe_seconds:$observe_seconds,started_utc:$started_utc,finished_utc:(if $finished_utc == "" then null else $finished_utc end),capabilities:{systemd:$systemd,docker:$docker,pcp:$pcp,sysstat:$sysstat,sysstat_history:$sysstat_history}}' \
     >"$REPORT_DIR/manifest.json"
 }
 
