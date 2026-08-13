@@ -20,7 +20,7 @@ source "$SERVER_DOCTOR_ROOT/lib/common.sh"
 # shellcheck source=lib/preflight.sh
 source "$SERVER_DOCTOR_ROOT/lib/preflight.sh"
 
-VERSION=0.2.1
+VERSION=0.2.2
 SERVER_DOCTOR_VERSION=$VERSION
 export SERVER_DOCTOR_VERSION
 
@@ -29,25 +29,18 @@ usage() {
 server-doctor - read-only Debian/Ubuntu diagnostic bundle collector
 
 Usage:
-  ~/server-doctor doctor [--profile standard] [--since 24h]
-  sudo ~/server-doctor audit [--profile standard] [--since 24h]
-  make doctor [PROFILE=standard] [SINCE=24h]
-  sudo make audit [PROFILE=quick|standard|deep] [SINCE=24h]
-  make verify ARCHIVE=/path/to/server-doctor_*.zip
+  make -C ~/server-doctor doctor PROFILE=standard SINCE=24h
+  sudo make -C ~/server-doctor audit PROFILE=standard SINCE=24h
+  make -C ~/server-doctor verify ARCHIVE=/path/to/server-doctor_*.zip
 
-Direct CLI:
-  server-doctor doctor|audit [options]
-  server-doctor verify --archive PATH
-
-Options:
-  --profile NAME          quick, standard (default), or deep
-  --since DURATION        positive duration: 30m, 24h, 2d, or 1w
-  --output DIRECTORY      report and archive destination
-  --observe-seconds N     active sample duration, 5..300 seconds
-  --max-report-mib N      hard maximum for the uncompressed report
-  --encrypt-to RECIPIENT  encrypt the ZIP with age; plaintext ZIP is removed
-  --archive PATH          archive passed to verify
-  -h, --help              show help
+Make variables:
+  PROFILE=NAME            quick, standard (default), or deep
+  SINCE=DURATION          positive duration: 30m, 24h, 2d, or 1w
+  OUTPUT=DIRECTORY        report and archive destination
+  OBSERVE_SECONDS=N       active sample duration, 5..300 seconds
+  MAX_REPORT_MIB=N        hard maximum for the uncompressed report
+  ENCRYPT_TO=RECIPIENT    encrypt the ZIP with age; plaintext ZIP is removed
+  ARCHIVE=PATH            archive passed to verify
 
 The collector never installs packages, changes configuration, restarts a
 service, prunes Docker objects, or repairs the server.

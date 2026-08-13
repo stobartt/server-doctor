@@ -12,26 +12,26 @@ Makefile служит интерфейсом; сбор выполняют отд
 
 ## Установка и запуск из домашней папки
 
-Для установки требуется пакет `make`. Если его нет, установите пакет обычным
-для сервера способом, затем в каталоге checkout выполните установку без `sudo`:
+Единственный поддерживаемый layout — checkout целиком находится в каталоге
+`~/server-doctor`. Никакой launcher поверх этого каталога не создаётся. Для
+запуска требуется пакет `make`; если его нет, установите пакет обычным для
+сервера способом:
 
 ```bash
 sudo apt-get install --yes make
-make install-user
 ```
 
-Установка сохраняет runtime в версионированной папке внутри
-`~/.local/share/server-doctor/` и атомарно создаёт symlink `~/server-doctor`.
-Повторная установка создаёт чистую новую release-папку, поэтому удалённый из
-новой версии коллектор не останется от старой. Других путей установки или имён
-launcher утилита не поддерживает. Если `~/server-doctor` уже занят обычным
-файлом или каталогом, установка завершится ошибкой и ничего не перезапишет.
-
-После этого из домашней папки или любого другого рабочего каталога запускайте:
+Обновление существующего checkout и проверка версии:
 
 ```bash
-cd ~
-~/server-doctor doctor --profile standard --since 24h
+git -C ~/server-doctor pull --ff-only
+make -C ~/server-doctor version
+```
+
+Из домашней папки или любого другого рабочего каталога выполните preflight:
+
+```bash
+make -C ~/server-doctor doctor PROFILE=standard SINCE=24h
 ```
 
 Preflight выполняется до создания отчёта. Если обязательной команды нет, он
@@ -50,14 +50,13 @@ sysstat его `pidstat`/`iostat`/`sar` дополнительно исполь�
 Когда `doctor` завершился успешно:
 
 ```bash
-sudo ~/server-doctor audit --profile standard --since 24h
+sudo make -C ~/server-doctor audit PROFILE=standard SINCE=24h
 ```
 
-Архив появится в `./artifacts` относительно текущего каталога. При запуске из
-домашней папки это будет `~/artifacts`. После скачивания проверьте архив:
+Архив появится в `~/server-doctor/artifacts`. После скачивания проверьте архив:
 
 ```bash
-~/server-doctor verify --archive /path/to/server-doctor_20260813T120000Z.zip
+make -C ~/server-doctor verify ARCHIVE=/path/to/server-doctor_20260813T120000Z.zip
 ```
 
 ## Профили
@@ -71,10 +70,10 @@ sudo ~/server-doctor audit --profile standard --since 24h
 Примеры:
 
 ```bash
-sudo ~/server-doctor audit --profile quick --since 6h
-sudo ~/server-doctor audit --profile standard --since 24h
-sudo ~/server-doctor audit --profile deep --since 48h --observe-seconds 180
-sudo ~/server-doctor audit --output /srv/secure-export --max-report-mib 2048
+sudo make -C ~/server-doctor audit PROFILE=quick SINCE=6h
+sudo make -C ~/server-doctor audit PROFILE=standard SINCE=24h
+sudo make -C ~/server-doctor audit PROFILE=deep SINCE=48h OBSERVE_SECONDS=180
+sudo make -C ~/server-doctor audit OUTPUT=/srv/secure-export MAX_REPORT_MIB=2048
 ```
 
 `SINCE` принимает положительное число и единицу `m`, `h`, `d` или `w`, максимум
@@ -208,8 +207,8 @@ truncation каждой проверки.
 Для дополнительного шифрования публичным ключом age:
 
 ```bash
-sudo ~/server-doctor audit --profile standard --encrypt-to age1example...
-~/server-doctor verify --archive ./artifacts/server-doctor_timestamp.zip.age
+sudo make -C ~/server-doctor audit PROFILE=standard ENCRYPT_TO=age1example...
+make -C ~/server-doctor verify ARCHIVE=~/server-doctor/artifacts/server-doctor_timestamp.zip.age
 ```
 
 После успешного шифрования plaintext ZIP удаляется; остаются `.zip.age` и его

@@ -10,7 +10,8 @@ done < <(find bin collectors lib tests -type f \( -name '*.sh' -o -name 'server-
 
 make -n doctor >/dev/null
 make -n audit >/dev/null
-make -n install-user >/dev/null
+make -n version >/dev/null
+make -n verify ARCHIVE=/tmp/server-doctor-test.zip >/dev/null
 
 if rg -n 'docker[[:space:]]+(system[[:space:]]+)?prune|docker[[:space:]]+(container|image|volume|network)[[:space:]]+prune|rm[[:space:]]+-rf|/proc/[^[:space:]]*/environ' \
   bin collectors lib; then

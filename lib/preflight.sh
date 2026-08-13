@@ -166,7 +166,7 @@ check_services_and_history() {
 check_runtime_access() {
   local mode=$1
   if [[ $mode == audit && $EUID -ne 0 ]]; then
-    add_error "a complete audit requires root; run sudo ~/server-doctor audit ..."
+    add_error "a complete audit requires root; run: sudo make -C ~/server-doctor audit PROFILE=$SERVER_DOCTOR_PROFILE SINCE=$SERVER_DOCTOR_SINCE"
   elif [[ $mode == doctor && $EUID -ne 0 ]]; then
     add_warning "run the final audit via sudo so journals, cgroups, Docker and storage metadata are complete"
   fi

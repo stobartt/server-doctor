@@ -17,13 +17,13 @@ ifneq ($(strip $(ENCRYPT_TO)),)
 COMMON_ARGS += --encrypt-to "$(ENCRYPT_TO)"
 endif
 
-.PHONY: help install-user doctor audit quick standard deep verify test lint check
+.PHONY: help version doctor audit quick standard deep verify test lint check
 
 help:
 	@$(DOCTOR) help
 
-install-user:
-	@bin/install-user
+version:
+	@$(DOCTOR) version
 
 doctor:
 	@$(DOCTOR) doctor $(COMMON_ARGS)

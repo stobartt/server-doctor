@@ -68,6 +68,7 @@ assert_eq "0" "${#PREFLIGHT_ERRORS[@]}" "missing sysstat must not block prefligh
 assert_eq "1" "${#PREFLIGHT_WARNINGS[@]}" "missing sysstat warning"
 
 "$ROOT/bin/server-doctor" help >/dev/null
+assert_eq "0.2.2" "$("$ROOT/bin/server-doctor" version)" "checkout version"
 if "$ROOT/bin/server-doctor" doctor --profile invalid >/dev/null 2>&1; then
   fail "invalid profile unexpectedly passed"
 fi
@@ -77,27 +78,6 @@ fi
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/server-doctor-test.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
-
-INSTALL_TEST_HOME="$TMP_ROOT/home"
-INSTALL_TEST_LAUNCHER="$INSTALL_TEST_HOME/server-doctor"
-mkdir -p "$INSTALL_TEST_HOME"
-HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
-[[ -L $INSTALL_TEST_LAUNCHER ]] || fail "user launcher symlink was not created"
-assert_eq "0.2.1" "$("$INSTALL_TEST_LAUNCHER" version)" "installed launcher version"
-first_release=$(readlink "$INSTALL_TEST_LAUNCHER")
-HOME="$INSTALL_TEST_HOME" "$ROOT/bin/install-user" >/dev/null
-second_release=$(readlink "$INSTALL_TEST_LAUNCHER")
-[[ $first_release != "$second_release" ]] || fail "reinstall did not create a clean release"
-[[ -x $first_release && -x $second_release ]] || fail "versioned install releases are missing"
-
-INSTALL_CONFLICT_HOME="$TMP_ROOT/conflict-home"
-INSTALL_CONFLICT="$INSTALL_CONFLICT_HOME/server-doctor"
-mkdir -p "$INSTALL_CONFLICT_HOME"
-printf 'preserve me\n' >"$INSTALL_CONFLICT"
-if HOME="$INSTALL_CONFLICT_HOME" "$ROOT/bin/install-user" >/dev/null 2>&1; then
-  fail "installer overwrote a non-symlink launcher"
-fi
-grep -q 'preserve me' "$INSTALL_CONFLICT" || fail "installer changed conflicting launcher"
 
 REPORT_DIR="$TMP_ROOT/report"
 mkdir -p "$REPORT_DIR/storage" "$REPORT_DIR/systemd" "$REPORT_DIR/logs" "$REPORT_DIR/security"
