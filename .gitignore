@@ -1,5 +1,7 @@
 /artifacts/
+.DS_Store
 *.zip
 *.zip.age
 *.sha256
 *.partial
+/temp
